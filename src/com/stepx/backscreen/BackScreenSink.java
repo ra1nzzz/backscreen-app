@@ -2,6 +2,9 @@ package com.stepx.backscreen;
 
 import android.content.ContentValues;
 import android.content.Context;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
@@ -101,6 +104,105 @@ public final class BackScreenSink {
             bmp.recycle();
         }
         return r;
+    }
+
+
+    // ---------------------------------------------------------- 通知镜像
+
+    /** 把当前点阵渲染成一条带大图的通知（系统若把关键通知投到背屏，这里就能看到）。 */
+    public static Result notifyPreview(Context ctx, Matrix m, String title) {
+        Result r = new Result();
+        try {
+            Bitmap bmp = render(m, 12, 0xFFFF7A1A);
+            NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
+            String channelId = "backscreen_preview";
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                NotificationChannel ch = new NotificationChannel(channelId, "背屏预览",
+                        NotificationManager.IMPORTANCE_DEFAULT);
+                nm.createNotificationChannel(ch);
+            }
+            Notification.Builder b;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                b = new Notification.Builder(ctx, channelId);
+            } else {
+                b = new Notification.Builder(ctx);
+            }
+            b.setSmallIcon(android.R.drawable.ic_dialog_info)
+                    .setContentTitle(title)
+                    .setContentText("点阵 " + m.cols + "×" + m.rows + " · " + m.onCount() + " 个亮点")
+                    .setStyle(new Notification.BigPictureStyle().bigPicture(bmp))
+                    .setAutoCancel(true);
+            nm.notify(1001, b.build());
+            bmp.recycle();
+            r.ok = true;
+            r.message = "已发出预览通知";
+        } catch (Exception e) {
+            r.ok = false;
+            r.message = "通知发送失败：" + e.getMessage();
+        }
+        return r;
+    }
+
+    // ---------------------------------------------------------- 通道尝试
+
+    /**
+     * 对探测到的组件做一次投递尝试。
+     * 说明：只能确认“已投递”，无法确认对端是否消费——真正的接口语义要等系统给出文档。
+     */
+    public static String tryPush(Context ctx, java.util.List<BackScreenProbe.Entry> entries, Matrix m) {
+        if (entries == null || entries.isEmpty()) {
+            return "没有可尝试的组件";
+        }
+        int sent = 0;
+        StringBuilder log = new StringBuilder();
+        String payload = matrixJson(m);
+        for (BackScreenProbe.Entry e : entries) {
+            if (!e.exported) {
+                log.append("跳过私有组件 ").append(shortName(e.component)).append("\n");
+                continue;
+            }
+            try {
+                android.content.ComponentName cn = new android.content.ComponentName(e.packageName, e.component);
+                Intent i = new Intent();
+                i.setComponent(cn);
+                i.putExtra("matrix", payload);
+                i.putExtra("data", payload);
+                i.putExtra("cols", m.cols);
+                i.putExtra("rows", m.rows);
+                if ("receiver".equals(e.type)) {
+                    ctx.sendBroadcast(i);
+                    sent++;
+                } else if ("service".equals(e.type)) {
+                    ctx.startService(i);
+                    sent++;
+                } else if ("provider".equals(e.type)) {
+                    android.net.Uri uri = android.net.Uri.parse("content://" + e.component);
+                    ctx.getContentResolver().call(uri, "setMatrix", payload, null);
+                    sent++;
+                }
+            } catch (Exception ex) {
+                log.append("失败 ").append(shortName(e.component)).append("：")
+                        .append(ex.getClass().getSimpleName()).append("\n");
+            }
+        }
+        return "已向 " + sent + " 个组件投递" + (log.length() > 0 ? "\n" + log : "");
+    }
+
+    private static String matrixJson(Matrix m) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\"cols\":").append(m.cols).append(",\"rows\":").append(m.rows).append(",\"cells\":[");
+        for (int i = 0; i < m.cells.length; i++) {
+            if (i > 0) sb.append(',');
+            sb.append(m.cells[i] ? 1 : 0);
+        }
+        sb.append("]}");
+        return sb.toString();
+    }
+
+    private static String shortName(String full) {
+        if (full == null) return "";
+        int i = full.lastIndexOf('.');
+        return i >= 0 ? full.substring(i + 1) : full;
     }
 
     public static void share(Context ctx, Uri uri) {
