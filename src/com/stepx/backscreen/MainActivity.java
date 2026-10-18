@@ -63,6 +63,7 @@ public class MainActivity extends Activity {
         applyMode(store.mode());
         restoreCachedStatus();
         refreshStatusIfNeeded();
+        handler.postDelayed(this::runProbe, 1200);
     }
 
     // ------------------------------------------------------------- 界面搭建
@@ -546,7 +547,158 @@ public class MainActivity extends Activity {
         note.setLineSpacing(0, 1.25f);
         note.setPadding(0, (int) Ui.dp(this, 18), 0, 0);
         card.addView(note);
+
+        LinearLayout wrap = Ui.column(this);
+        wrap.addView(card);
+        LinearLayout.LayoutParams probeLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        probeLp.topMargin = (int) Ui.dp(this, 12);
+        wrap.addView(buildProbeSection(), probeLp);
+        return wrap;
+    }
+
+    // ------------------------------------------------------------- 接口探测
+
+    private java.util.List<BackScreenProbe.Entry> probeEntries = new java.util.ArrayList<>();
+    private TextView probeResultView;
+
+    private View buildProbeSection() {
+        LinearLayout card = card();
+        card.addView(Ui.label(this, "背屏接口探测", 13, Ui.MUTED, false));
+
+        TextView desc = Ui.label(this,
+                "枚举设备上所有 ContentProvider / Service / Receiver，筛出与背屏、点阵相关的组件。"
+                        + "命中即说明系统已把接口开放给应用；没有命中说明这一版仍未开放。",
+                12, Ui.MUTED, false);
+        desc.setLineSpacing(0, 1.25f);
+        desc.setPadding(0, (int) Ui.dp(this, 8), 0, 0);
+        card.addView(desc);
+
+        LinearLayout row1 = Ui.row(this, 0);
+        TextView scan = Ui.button(this, "扫描接口", true);
+        scan.setOnClickListener(v -> runProbe());
+        row1.addView(scan, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView copy = Ui.button(this, "复制报告", false);
+        copy.setOnClickListener(v -> {
+            String report = BackScreenProbe.report(this, probeEntries);
+            android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                    getSystemService(CLIPBOARD_SERVICE);
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("背屏接口探测", report));
+            Toast.makeText(this, "报告已复制", Toast.LENGTH_SHORT).show();
+        });
+        LinearLayout.LayoutParams copyLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        copyLp.leftMargin = (int) Ui.dp(this, 10);
+        row1.addView(copy, copyLp);
+        LinearLayout.LayoutParams row1Lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        row1Lp.topMargin = (int) Ui.dp(this, 12);
+        card.addView(row1, row1Lp);
+
+        LinearLayout row2 = Ui.row(this, 0);
+        TextView push = Ui.button(this, "尝试推送", false);
+        push.setOnClickListener(v -> {
+            if (probeEntries.isEmpty()) {
+                Toast.makeText(this, "请先扫描接口", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            String msg = BackScreenSink.tryPush(this, probeEntries, buildCurrentMatrix());
+            Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
+        });
+        row2.addView(push, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView notify = Ui.button(this, "预览通知", false);
+        notify.setOnClickListener(v -> sendPreviewNotification());
+        LinearLayout.LayoutParams notifyLp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        notifyLp.leftMargin = (int) Ui.dp(this, 10);
+        row2.addView(notify, notifyLp);
+        LinearLayout.LayoutParams row2Lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        row2Lp.topMargin = (int) Ui.dp(this, 10);
+        card.addView(row2, row2Lp);
+
+        probeResultView = Ui.label(this, "尚未扫描", 12, Ui.MUTED, false);
+        probeResultView.setPadding((int) Ui.dp(this, 12), (int) Ui.dp(this, 10),
+                (int) Ui.dp(this, 12), (int) Ui.dp(this, 10));
+        probeResultView.setBackground(Ui.round(this, 12, Ui.CARD_2));
+        probeResultView.setTypeface(android.graphics.Typeface.MONOSPACE);
+        probeResultView.setLineSpacing(0, 1.2f);
+        LinearLayout.LayoutParams pvLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        pvLp.topMargin = (int) Ui.dp(this, 10);
+        card.addView(probeResultView, pvLp);
         return card;
+    }
+
+    private void runProbe() {
+        if (probeResultView == null) return;
+        probeResultView.setText("扫描中…");
+        new Thread(() -> {
+            final java.util.List<BackScreenProbe.Entry> found = BackScreenProbe.scan(this);
+            runOnUiThread(() -> {
+                probeEntries = found;
+                StringBuilder sb = new StringBuilder();
+                if (found.isEmpty()) {
+                    sb.append("未发现背屏相关组件\n这一版系统还没有对第三方应用开放点阵屏接口。");
+                } else {
+                    sb.append("命中 ").append(found.size()).append(" 个组件：\n");
+                    for (BackScreenProbe.Entry e : found) {
+                        sb.append("· ").append(e.toString()).append("\n");
+                    }
+                }
+                String text = sb.toString().trim();
+                probeResultView.setText(text);
+                writeProbeReport(BackScreenProbe.report(this, found));
+            });
+        }, "probe").start();
+    }
+
+    /** 把探测报告写进 Download，便于外部读取核对。 */
+    private void writeProbeReport(String text) {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                android.content.ContentResolver cr = getContentResolver();
+                android.net.Uri collection = android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI;
+                try (android.database.Cursor c = cr.query(collection, new String[]{
+                        android.provider.MediaStore.Downloads._ID},
+                        android.provider.MediaStore.Downloads.DISPLAY_NAME + "=?",
+                        new String[]{"BackScreenProbe.txt"}, null)) {
+                    while (c != null && c.moveToNext()) {
+                        cr.delete(android.net.Uri.withAppendedPath(collection,
+                                String.valueOf(c.getLong(0))), null, null);
+                    }
+                }
+                android.content.ContentValues v = new android.content.ContentValues();
+                v.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, "BackScreenProbe.txt");
+                v.put(android.provider.MediaStore.Downloads.MIME_TYPE, "text/plain");
+                v.put(android.provider.MediaStore.Downloads.RELATIVE_PATH, "Download");
+                android.net.Uri uri = cr.insert(collection, v);
+                if (uri != null) {
+                    java.io.OutputStream os = cr.openOutputStream(uri);
+                    if (os != null) {
+                        os.write(text.getBytes("UTF-8"));
+                        os.close();
+                    }
+                }
+            } else {
+                java.io.File f = new java.io.File(
+                        android.os.Environment.getExternalStoragePublicDirectory(
+                                android.os.Environment.DIRECTORY_DOWNLOADS), "BackScreenProbe.txt");
+                java.io.FileOutputStream fos = new java.io.FileOutputStream(f);
+                fos.write(text.getBytes("UTF-8"));
+                fos.close();
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void sendPreviewNotification() {
+        if (android.os.Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission("android.permission.POST_NOTIFICATIONS")
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 2001);
+            return;
+        }
+        BackScreenSink.Result r = BackScreenSink.notifyPreview(this, buildCurrentMatrix(), "背屏预览");
+        Toast.makeText(this, r.message, Toast.LENGTH_SHORT).show();
     }
 
     private void showStatusUrlDialog() {
