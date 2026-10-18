@@ -3,7 +3,7 @@
 STEPX Neo 点阵背屏的内容工作站：自定义文字、二维码、像素图，并把 Codex 状态搬上背屏预览。
 
 - 包名：`com.stepx.backscreen`
-- 版本：1.0.0（versionCode 1）
+- 版本：1.1.0（versionCode 2）
 - minSdk / targetSdk：23 / 34
 - 体积：约 257 KB（含 ZXing 二维码库）
 - 无 AndroidX、无 Gradle：`aapt2 + javac + d8 + apksigner` 直接出包
@@ -44,7 +44,17 @@ STEPX Neo 点阵背屏的内容工作站：自定义文字、二维码、像素�
 - 打开「背屏优先显示 Codex 状态」后，预览会自动切成状态画面（图形 + 会话数 + 状态词），每 60 秒刷新一次
 - 数据源地址可在「状态」「设置」里改，默认指向 `amoo-status` 仓库的 `status.json`
 
-### 5. 输出
+### 5. 接口探测（1.1.0 新增）
+枚举全机的 ContentProvider / Service / Receiver，按「背屏、点阵、LED 矩阵、
+secondary display」等关键字筛出相关组件：
+- 命中即说明系统已把接口开放给应用，可继续对接；
+- 未命中说明这一版仍未开放；
+- 报告自动写入 `Download/BackScreenProbe.txt`，设置页可重扫、复制、导出。
+
+同一页还提供「尝试推送」（向命中的导出组件投递点阵数据）和「预览通知」
+（把点阵作为大图通知发出，适用于背屏展示关键通知的机型）。
+
+### 6. 输出
 「保存点阵图」把当前画面渲染成 PNG（每格 20px、带光晕）写入相册
 `Pictures/BackScreen`，可直接分享，或在系统背屏自定义 / Step Studio 作品里选用。
 
@@ -64,6 +74,17 @@ VERSION_CODE=1 VERSION_NAME=1.0.0 bash build.sh
 ```
 
 产物：`out/BackScreen.apk`
+
+## 更新记录
+
+### 1.1.0
+- 新增背屏接口探测：全机组件扫描、报告落盘 `Download/BackScreenProbe.txt`、启动自动扫描
+- 新增组件投递尝试（receiver / service / provider 三类）
+- 新增通知镜像预览（BigPictureStyle），走「背屏展示关键通知」这条链路
+- 新增 `QUERY_ALL_PACKAGES`、`POST_NOTIFICATIONS` 权限
+
+### 1.0.0
+- 首个版本：文字 / 二维码 / 像素图 / Codex 状态，点阵预览与导出
 
 ## 结构
 
