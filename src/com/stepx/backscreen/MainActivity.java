@@ -31,7 +31,8 @@ import java.util.List;
 
 public class MainActivity extends Activity {
 
-    private static final int[] SIZE_OPTIONS = {16, 24, 32, 48};
+    /** 点阵规格，第一项是真机背屏规格 17×23（391 格）。 */
+    private static final int[][] SIZES = {{17, 23}, {16, 16}, {24, 24}, {32, 32}, {48, 48}};
     private static final String[] MODE_NAMES = {"文字", "二维码", "像素", "状态", "设置"};
     private static final int REQ_QR_IMAGE = 1001;
     private static final int REQ_PIXEL_IMAGE = 1002;
@@ -47,6 +48,21 @@ public class MainActivity extends Activity {
     private StatusClient.Snapshot snapshot = new StatusClient.Snapshot();
     private final Handler handler = new Handler(Looper.getMainLooper());
     private boolean statusRefreshRunning;
+
+    // ---- 轮播（单字 / 跑马灯）：App 内预览用，帧序列同时可导出下发 ----
+    private final List<Matrix> animFrames = new ArrayList<>();
+    private int animIndex;
+    private boolean animPlaying;
+    private TextView animChip;
+    private final Runnable animTick = new Runnable() {
+        @Override
+        public void run() {
+            if (!animPlaying || animFrames.isEmpty()) return;
+            preview.setMatrix(animFrames.get(animIndex % animFrames.size()));
+            animIndex = (animIndex + 1) % animFrames.size();
+            handler.postDelayed(this, Math.max(40, store.animInterval()));
+        }
+    };
     private final Runnable statusLoop = new Runnable() {
         @Override
         public void run() {
@@ -176,16 +192,18 @@ public class MainActivity extends Activity {
     }
 
     private void showSizePicker() {
-        String[] items = new String[SIZE_OPTIONS.length];
-        for (int i = 0; i < SIZE_OPTIONS.length; i++) {
-            items[i] = SIZE_OPTIONS[i] + " × " + SIZE_OPTIONS[i];
+        String[] items = new String[SIZES.length];
+        for (int i = 0; i < SIZES.length; i++) {
+            items[i] = SIZES[i][0] + " × " + SIZES[i][1]
+                    + (i == 0 ? "（真机背屏）" : "");
         }
         new AlertDialog.Builder(this)
                 .setTitle("点阵规格")
                 .setItems(items, (d, which) -> {
-                    int s = SIZE_OPTIONS[which];
-                    store.setSize(s, s);
-                    pixelMatrix = pixelMatrix.resized(s, s);
+                    int c = SIZES[which][0];
+                    int rr = SIZES[which][1];
+                    store.setSize(c, rr);
+                    pixelMatrix = pixelMatrix.resized(c, rr);
                     store.setPixel(encodePixel(pixelMatrix));
                     sizeChip.setText(sizeText());
                     applyMode(store.mode());
@@ -286,7 +304,71 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         toolsLp.topMargin = (int) Ui.dp(this, 10);
         card.addView(tools, toolsLp);
+
+        // 轮播控制：一次只显示一个字，或整条字带横向跑马灯
+        LinearLayout animRow = Ui.row(this, 0);
+        animChip = Ui.button(this, "轮播：" + FrameAnim.NAMES[store.anim()], false);
+        animChip.setOnClickListener(v -> {
+            int next = (store.anim() + 1) % FrameAnim.NAMES.length;
+            store.setAnim(next);
+            animChip.setText("轮播：" + FrameAnim.NAMES[next]);
+            refreshPreview();
+        });
+        animRow.addView(animChip);
+
+        TextView speed = Ui.button(this, "间隔：" + store.animInterval() + "ms", false);
+        speed.setOnClickListener(v -> {
+            int[] opts = {1200, 800, 500, 300, 150, 80};
+            int cur = store.animInterval();
+            int next = opts[0];
+            for (int i = 0; i < opts.length; i++) {
+                if (opts[i] == cur) {
+                    next = opts[(i + 1) % opts.length];
+                    break;
+                }
+            }
+            store.setAnimInterval(next);
+            speed.setText("间隔：" + next + "ms");
+            refreshPreview();
+        });
+        LinearLayout.LayoutParams spLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        spLp.leftMargin = (int) Ui.dp(this, 8);
+        animRow.addView(speed, spLp);
+        LinearLayout.LayoutParams animLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        animLp.topMargin = (int) Ui.dp(this, 8);
+        card.addView(animRow, animLp);
+
+        TextView exportFrames = Ui.button(this, "导出帧序列（JSON）", true);
+        exportFrames.setGravity(Gravity.CENTER);
+        exportFrames.setOnClickListener(v -> exportFrameSequence());
+        LinearLayout.LayoutParams efLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        efLp.topMargin = (int) Ui.dp(this, 8);
+        card.addView(exportFrames, efLp);
         return card;
+    }
+
+    /** 导出当前文字对应的帧序列，供平台点阵接口逐帧下发。 */
+    private void exportFrameSequence() {
+        int mode = store.anim();
+        if (mode == FrameAnim.NONE) mode = FrameAnim.SINGLE_CHAR;
+        List<Matrix> frames = FrameAnim.build(this, mode, store.text(), store.cols(),
+                store.rows(), store.bold(), store.marqueeStep());
+        BackScreenSink.Result r = BackScreenSink.exportFramesJson(this, frames,
+                store.animInterval(), mode, "backscreen-frames");
+        if (!r.ok) {
+            Toast.makeText(this, r.message, Toast.LENGTH_LONG).show();
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("帧序列已导出")
+                .setMessage(r.message + "\n\n每帧是 " + store.cols() + "×" + store.rows()
+                        + " 的 0/255 亮度数组，可直接作为平台点阵接口的 frame 参数逐帧下发；"
+                        + "App 内的预览就是同一份帧序列在本地循环播放。")
+                .setPositiveButton("知道了", null)
+                .show();
     }
 
     private View buildQrPanel() {
@@ -457,12 +539,13 @@ public class MainActivity extends Activity {
         LinearLayout card = card();
         card.addView(Ui.label(this, "点阵规格", 13, Ui.MUTED, false));
         LinearLayout sizeRow = Ui.row(this, 0);
-        for (int i = 0; i < SIZE_OPTIONS.length; i++) {
-            final int s = SIZE_OPTIONS[i];
-            TextView b = Ui.button(this, s + "×" + s, store.cols() == s);
+        for (int i = 0; i < SIZES.length; i++) {
+            final int c = SIZES[i][0];
+            final int rr = SIZES[i][1];
+            TextView b = Ui.button(this, c + "×" + rr, store.cols() == c && store.rows() == rr);
             b.setOnClickListener(v -> {
-                store.setSize(s, s);
-                pixelMatrix = pixelMatrix.resized(s, s);
+                store.setSize(c, rr);
+                pixelMatrix = pixelMatrix.resized(c, rr);
                 store.setPixel(encodePixel(pixelMatrix));
                 sizeChip.setText(sizeText());
                 applyMode(4);
@@ -720,9 +803,37 @@ public class MainActivity extends Activity {
 
     // ------------------------------------------------------------- 预览
 
+    private void startAnim() {
+        animPlaying = true;
+        handler.removeCallbacks(animTick);
+        handler.postDelayed(animTick, Math.max(40, store.animInterval()));
+    }
+
+    private void stopAnim() {
+        animPlaying = false;
+        handler.removeCallbacks(animTick);
+    }
+
     private void refreshPreview() {
         int cols = store.cols();
         int rows = store.rows();
+
+        // 文字模式 + 打开轮播：优先走帧序列，预览按间隔自己播
+        stopAnim();
+        animFrames.clear();
+        if (store.mode() == 0 && store.anim() != FrameAnim.NONE) {
+            animFrames.addAll(FrameAnim.build(this, store.anim(), store.text(), cols, rows,
+                    store.bold(), store.marqueeStep()));
+            if (!animFrames.isEmpty()) {
+                animIndex = 0;
+                preview.setMatrix(animFrames.get(0));
+                hintView.setText("显示源：自定义文字 · " + FrameAnim.NAMES[store.anim()]
+                        + "轮播 · " + animFrames.size() + " 帧 / " + store.animInterval() + "ms");
+                startAnim();
+                return;
+            }
+        }
+
         Matrix m;
         if (store.followStatus() || store.mode() == 3) {
             m = statusMatrix(snapshot);
@@ -877,9 +988,9 @@ public class MainActivity extends Activity {
         }
         new AlertDialog.Builder(this)
                 .setTitle("已保存")
-                .setMessage(r.message + "\n\n系统背屏接口尚未对第三方应用开放，"
-                        + "可以先在系统背屏自定义或 Step Studio 作品里选用这张点阵图；"
-                        + "也可以直接分享出去。")
+                .setMessage(r.message + "\n\n第三方 APK 仍没有直写背屏的公开接口，"
+                        + "这张点阵图可以先在系统背屏自定义里选用，或直接分享；"
+                        + "要让内容真正上屏，走平台点阵接口（帧序列在文字面板导出）。")
                 .setPositiveButton("分享", (d, w) -> BackScreenSink.share(this, r.uri))
                 .setNegativeButton("知道了", null)
                 .show();

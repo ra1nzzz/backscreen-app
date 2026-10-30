@@ -13,11 +13,11 @@ public final class Store {
     }
 
     public int cols() {
-        return sp.getInt("cols", 32);
+        return sp.getInt("cols", 17);   // 真机背屏点阵：17 列
     }
 
     public int rows() {
-        return sp.getInt("rows", 32);
+        return sp.getInt("rows", 23);   // 23 行，共 391 格
     }
 
     public void setSize(int cols, int rows) {
@@ -97,6 +97,33 @@ public final class Store {
 
     public void setThreshold(int v) {
         sp.edit().putInt("threshold", v).apply();
+    }
+
+    /** 轮播模式：0=关，1=单字轮播，2=跑马灯（见 FrameAnim）。 */
+    public int anim() {
+        return sp.getInt("anim", FrameAnim.NONE);
+    }
+
+    public void setAnim(int v) {
+        sp.edit().putInt("anim", v).apply();
+    }
+
+    /** 轮播间隔，毫秒；单字轮播默认 1200ms。 */
+    public int animInterval() {
+        return sp.getInt("anim_interval", 1200);
+    }
+
+    public void setAnimInterval(int v) {
+        sp.edit().putInt("anim_interval", v).apply();
+    }
+
+    /** 跑马灯每帧平移的列数。 */
+    public int marqueeStep() {
+        return sp.getInt("marquee_step", 2);
+    }
+
+    public void setMarqueeStep(int v) {
+        sp.edit().putInt("marquee_step", v).apply();
     }
 
     public boolean dither() {

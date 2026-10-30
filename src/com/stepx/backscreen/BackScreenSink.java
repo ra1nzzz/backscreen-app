@@ -22,11 +22,13 @@ import java.io.OutputStream;
 /**
  * 背屏输出。
  *
- * 现状说明（2026-10）：Step AOS 的点阵背屏目前只对系统服务与 Step Studio 运行时开放写入，
- * 普通第三方 APK 没有可用的公开接口。因此这里做两件真实可落地的事：
- *   1) 把当前点阵渲染成 PNG 落到相册（Pictures/BackScreen），可直接在 Studio 作品或系统背屏自定义里使用；
- *   2) 提供分享 Intent，把图片发给其他应用。
- * 若后续系统开放通道，只需在这里补一个写入实现，其余部分不用改。
+ * 现状说明（2026-10 复核）：Step AOS 的点阵背屏只对系统服务与运行时开放写入，
+ * 普通第三方 APK 仍然没有可直写的公开接口；真机可用通道是平台的背屏原子能力
+ * （推 17×23 / 391 格亮度帧）。因此这里提供三条落地路径：
+ *   1) 导出 PNG 到相册（Pictures/BackScreen），可在系统背屏自定义或 Studio 作品里选用；
+ *   2) 导出轮播帧序列 JSON 到 Download/BackScreen，字段与平台点阵接口的 frame 参数一致，可直接逐帧下发；
+ *   3) 分享 Intent，把图片发给其他应用。
+ * 系统若某天开放 APK 直写，只需在这里补一个写入实现，其余部分不用改。
  */
 public final class BackScreenSink {
 
@@ -106,6 +108,82 @@ public final class BackScreenSink {
         return r;
     }
 
+
+    // ---------------------------------------------------------- 帧序列导出
+
+    /**
+     * 把轮播帧序列导出成 JSON，落到 Download/BackScreen。
+     *
+     * 结构：{"cols":17,"rows":23,"intervalMs":1200,"mode":2,"frames":[[391 个 0/255], ...]}
+     * 每帧行优先、长度 cols*rows，与平台点阵接口的 frame 参数一致，可直接取用。
+     */
+    public static Result exportFramesJson(Context ctx, java.util.List<Matrix> frames,
+                                          int intervalMs, int mode, String baseName) {
+        Result r = new Result();
+        if (frames == null || frames.isEmpty()) {
+            r.ok = false;
+            r.message = "没有可导出的帧（先在文字面板打开轮播）";
+            return r;
+        }
+        Matrix f0 = frames.get(0);
+        StringBuilder sb = new StringBuilder(4096);
+        sb.append("{\"cols\":").append(f0.cols)
+                .append(",\"rows\":").append(f0.rows)
+                .append(",\"intervalMs\":").append(intervalMs)
+                .append(",\"mode\":").append(mode)
+                .append(",\"frames\":[");
+        for (int i = 0; i < frames.size(); i++) {
+            if (i > 0) sb.append(',');
+            int[] luma = FrameAnim.toLuma(frames.get(i));
+            sb.append('[');
+            for (int k = 0; k < luma.length; k++) {
+                if (k > 0) sb.append(',');
+                sb.append(luma[k]);
+            }
+            sb.append(']');
+        }
+        sb.append("]}");
+
+        String name = baseName + "-" + System.currentTimeMillis() + ".json";
+        byte[] bytes = sb.toString().getBytes();
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ContentValues v = new ContentValues();
+                v.put(MediaStore.Downloads.DISPLAY_NAME, name);
+                v.put(MediaStore.Downloads.MIME_TYPE, "application/json");
+                v.put(MediaStore.Downloads.RELATIVE_PATH, "Download/BackScreen");
+                v.put(MediaStore.Downloads.IS_PENDING, 1);
+                Uri uri = ctx.getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+                if (uri == null) throw new IllegalStateException("无法创建下载条目");
+                OutputStream os = ctx.getContentResolver().openOutputStream(uri);
+                if (os == null) throw new IllegalStateException("无法写入");
+                os.write(bytes);
+                os.close();
+                v.clear();
+                v.put(MediaStore.Downloads.IS_PENDING, 0);
+                ctx.getContentResolver().update(uri, v, null, null);
+                r.ok = true;
+                r.uri = uri;
+            } else {
+                File dir = new File(Environment.getExternalStoragePublicDirectory(
+                        Environment.DIRECTORY_DOWNLOADS), "BackScreen");
+                if (!dir.exists() && !dir.mkdirs()) throw new IllegalStateException("无法创建目录");
+                File f = new File(dir, name);
+                FileOutputStream fos = new FileOutputStream(f);
+                fos.write(bytes);
+                fos.close();
+                r.ok = true;
+                r.uri = Uri.fromFile(f);
+            }
+            int n = frames.size();
+            r.message = "已导出 " + n + " 帧（" + f0.cols + "×" + f0.rows + "）到 Download/BackScreen/"
+                    + name;
+        } catch (Exception e) {
+            r.ok = false;
+            r.message = "导出失败：" + e.getMessage();
+        }
+        return r;
+    }
 
     // ---------------------------------------------------------- 通知镜像
 

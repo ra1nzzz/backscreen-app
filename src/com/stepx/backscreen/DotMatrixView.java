@@ -26,7 +26,10 @@ public class DotMatrixView extends View {
     }
 
     public void setMatrix(Matrix m) {
+        boolean sizeChanged = this.matrix == null
+                || (m != null && (this.matrix.cols != m.cols || this.matrix.rows != m.rows));
         this.matrix = m;
+        if (sizeChanged) requestLayout();
         invalidate();
     }
 
@@ -41,7 +44,17 @@ public class DotMatrixView extends View {
         int h = MeasureSpec.getSize(heightMeasureSpec);
         int size = Math.min(w, h);
         if (size == 0) size = (int) (240 * getResources().getDisplayMetrics().density);
-        setMeasuredDimension(size, size);
+        // 按点阵实际宽高比出图：真机 17×23，预览不再是方的
+        float ratio = 1f;
+        if (matrix != null && matrix.rows > 0) ratio = (float) matrix.cols / matrix.rows;
+        int vw = size;
+        int vh = size;
+        if (ratio > 1f) {
+            vh = Math.round(size / ratio);
+        } else if (ratio < 1f) {
+            vw = Math.round(size * ratio);
+        }
+        setMeasuredDimension(vw, vh);
     }
 
     @Override
